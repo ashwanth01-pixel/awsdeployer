@@ -1,0 +1,421 @@
+## Screenshots
+![Screenshot 1](Screenshot%202025-08-14%20145050.png)
+![Screenshot 2](Screenshot%202025-08-14%20145129.png)
+![Screenshot 3](Screenshot%202025-08-14%20145336.png)
+![Screenshot 4](Screenshot%202025-08-14%20145401.png)
+![Screenshot 5](Screenshot%202025-08-14%20145429.png)
+
+
+
+CI.yml
+
+name: CI - Docker Build & Push
+
+on:
+  #push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted   # Use your self-hosted runner
+    # Optionally, if you have labels on your runner:
+    # runs-on: [self-hosted, linux, x64]
+
+    env:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ env.DOCKER_HUB_USERNAME }}
+        password: ${{ env.DOCKER_HUB_ACCESS_TOKEN }}
+
+    - name: Build & Push Flask App
+      run: |
+        cd backend
+        docker build -t ${{ env.DOCKER_HUB_USERNAME }}/flask-app:latest .
+        docker push ${{ env.DOCKER_HUB_USERNAME }}/flask-app:latest
+
+    - name: Build & Push Deployer App
+      run: |
+        cd backend
+        docker build -t ${{ env.DOCKER_HUB_USERNAME }}/deployer-app:latest -f deployer-dockerfile .
+        docker push ${{ env.DOCKER_HUB_USERNAME }}/deployer-app:latest
+
+    - name: Build & Push History Service
+      run: |
+        cd backend/history-services
+        docker build -t ${{ env.DOCKER_HUB_USERNAME }}/history-service:latest .
+        docker push ${{ env.DOCKER_HUB_USERNAME }}/history-service:latest
+
+    - name: Build & Push Flask Monitor
+      run: |
+        cd backend/database
+        docker build -t ${{ env.DOCKER_HUB_USERNAME }}/flask-monitor:latest .
+        docker push ${{ env.DOCKER_HUB_USERNAME }}/flask-monitor:latest
+
+
+
+CD.yml
+
+name: CD - Kubernetes Deploy
+
+on:
+  #push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.27.0'
+
+    - name: Apply Namespace
+      run: |
+        cd backend/k8s
+        kubectl apply -f namespace.yaml
+        echo "Namespace applied"
+        kubectl get ns
+
+    - name: Apply Persistent Volumes
+      run: |
+        cd backend/k8s
+        kubectl apply -f pv/
+        echo "PersistentVolumes applied"
+        kubectl get pv
+
+    - name: Apply StatefulSets
+      run: |
+        cd backend/k8s
+        kubectl apply -f statefulset/
+        echo "StatefulSets applied"
+        kubectl get statefulsets -n ashapp
+        kubectl get po -n ashapp
+
+    - name: Apply Deployments
+      run: |
+        cd backend/k8s
+        kubectl apply -f deployment/
+        echo "Deployments applied"
+        kubectl get deployments -n ashapp
+        kubectl get po -n ashapp
+
+    - name: Apply Services
+      run: |
+        cd backend/k8s
+        kubectl apply -f services/
+        echo "Services applied"
+        kubectl get svc -n ashapp
+
+    - name: Apply Ingress
+      run: |
+        cd backend/k8s
+        kubectl apply -f ingress/
+        echo "Ingress applied"
+        kubectl get svc -n ingress-nginx
+        kubectl get svc -n ashapp
+
+    - name: Apply Network Policies
+      run: |
+        cd backend/k8s
+        kubectl apply -f networkpolicies/
+        echo "NetworkPolicies applied"
+        kubectl get networkpolicy -n ashapp
+
+    - name: Apply HPA
+      run: |
+        cd backend/k8s
+        kubectl apply -f hpa/
+        echo "HPA applied"
+        kubectl get hpa -n ashapp
+
+    - name: Apply RBAC
+      run: |
+        cd backend/k8s
+        kubectl apply -f rbac/ --recursive
+        echo "RBAC applied"
+        kubectl get sa -n ashapp
+        kubectl get role -n ashapp
+        kubectl get rolebinding -n ashapp
+
+
+
+
+
+LOGIN
+
+cd ../login
+
+docker build -t ashwanth01/ashapp-login:latest .
+
+docker push ashwanth01/ashapp-login:latest
+
+
+LOGIN Dockerfile:-
+
+# Stage 1: Build React App
+FROM node:20-alpine AS build
+WORKDIR /app
+
+# Install dependencies
+COPY package.json package-lock.json ./
+RUN npm install
+
+# Copy source and build
+COPY . .
+RUN npm run build
+
+# Stage 2: Serve the build using Nginx
+FROM nginx:alpine
+COPY --from=build /app/build /usr/share/nginx/html
+
+# Copy custom nginx config if needed (optional)
+# COPY nginx.conf /etc/nginx/nginx.conf
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+
+LOGIN K8S:-
+
+DEPLOYMENT
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: login
+  namespace: ashapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: login
+  template:
+    metadata:
+      labels:
+        app: login
+    spec:
+      containers:
+      - name: login
+        image: ashwanth01/ashapp-login:latest
+        ports:
+        - containerPort: 80
+        # --------------------------
+        # Resource Requests & Limits
+        # --------------------------
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+LOGIN SVC:-
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: login
+  namespace: ashapp
+spec:
+  type: ClusterIP
+  selector:
+    app: login
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+
+
+
+
+
+K8S:-
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployer-app
+  labels:
+    app: deployer-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deployer-app
+  template:
+    metadata:
+      labels:
+        app: deployer-app
+    spec:
+      containers:
+      - name: deployer-app
+        image: ashwanth01/deployer-app:latest
+        ports:
+        - containerPort: 5001
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: deployer-app
+spec:
+  selector:
+    app: deployer-app
+  ports:
+    - protocol: TCP
+      port: 5001
+      targetPort: 5001
+  type: ClusterIP
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-app
+  labels:
+    app: flask-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-app
+  template:
+    metadata:
+      labels:
+        app: flask-app
+    spec:
+      containers:
+      - name: flask-app
+        image: ashwanth01/flask-app:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: KUBECONFIG
+          value: "/home/appuser/.kube/config"
+        securityContext:
+          runAsUser: 0   # run as root inside the pod
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        - name: kube-bin
+          mountPath: /usr/bin/docker
+          subPath: docker
+        - name: kube-bin
+          mountPath: /usr/bin/kubectl
+          subPath: kubectl
+        - name: kubeconfig
+          mountPath: /home/appuser/.kube
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: kube-bin
+        hostPath:
+          path: /usr/bin   # this folder contains docker + kubectl on your node
+      - name: kubeconfig
+        hostPath:
+          path: /home/ubuntu/.kube   # adjust if kubeconfig is elsewhere
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-app
+spec:
+  selector:
+    app: flask-app
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+  type: NodePort
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: history-service
+  labels:
+    app: history-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: history-service
+  template:
+    metadata:
+      labels:
+        app: history-service
+    spec:
+      containers:
+      - name: history-service
+        image: ashwanth01/history-service:latest
+        ports:
+        - containerPort: 8081
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: history-service
+spec:
+  selector:
+    app: history-service
+  ports:
+    - protocol: TCP
+      port: 8081
+      targetPort: 8081
+  type: ClusterIP
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: login
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: login
+  template:
+    metadata:
+      labels:
+        app: login
+    spec:
+      containers:
+      - name: login
+        image: ashwanth01/ashapp-login:latest
+        ports:
+        - containerPort: 80
+apiVersion: v1
+kind: Service
+metadata:
+  name: login
+spec:
+  type: ClusterIP
+  selector:
+    app: login
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
